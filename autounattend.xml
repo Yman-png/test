@@ -1,1 +1,148 @@
-g
+    <?xml version="1.0" encoding="utf-8"?>
+    <unattend xmlns="urn:schemas-microsoft-com:unattend" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">
+      <!-- Safe debloat + local account + performance & privacy tweaks (ChatGPT, 2025‑07‑12) -->
+
+      <!-- ====== windowsPE ====== -->
+      <settings pass="windowsPE">
+        <component name="Microsoft-Windows-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+          <UserData>
+            <AcceptEula>true</AcceptEula>
+          </UserData>
+        </component>
+      </settings>
+
+      <!-- ====== specialize ====== -->
+      <settings pass="specialize">
+        <component name="Microsoft-Windows-Deployment" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+          <RunSynchronous>
+            <!-- Extract embedded files -->
+            <RunSynchronousCommand wcm:action="add">
+              <Order>1</Order>
+              <Path>powershell.exe -NoProfile -WindowStyle Hidden -Command "$xml=[xml]::new();$xml.Load('C:\Windows\Panther\unattend.xml');$sb=[scriptblock]::Create($xml.unattend.Extensions.ExtractScript);Invoke-Command -ScriptBlock $sb -ArgumentList $xml;"</Path>
+            </RunSynchronousCommand>
+            <!-- Debloat + tweak script -->
+            <RunSynchronousCommand wcm:action="add">
+              <Order>2</Order>
+              <Path>powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File \"C:\Windows\Setup\Scripts\Tweaks.ps1\"</Path>
+            </RunSynchronousCommand>
+            <!-- Force local account -->
+            <RunSynchronousCommand wcm:action="add">
+              <Order>3</Order>
+              <Path>reg.exe add \"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\OOBE\" /v BypassNRO /t REG_DWORD /d 1 /f</Path>
+            </RunSynchronousCommand>
+          </RunSynchronous>
+        </component>
+      </settings>
+
+      <!-- ====== oobeSystem ====== -->
+      <settings pass="oobeSystem">
+        <component name="Microsoft-Windows-Shell-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+          <OOBE>
+            <HideEULAPage>true</HideEULAPage>
+            <HideOEMRegistrationScreen>true</HideOEMRegistrationScreen>
+            <HideOnlineAccountScreens>true</HideOnlineAccountScreens>
+            <HideWirelessSetupInOOBE>true</HideWirelessSetupInOOBE>
+            <NetworkLocation>Work</NetworkLocation>
+            <ProtectYourPC>1</ProtectYourPC>
+          </OOBE>
+          <UserAccounts>
+            <LocalAccounts>
+              <LocalAccount wcm:action="add">
+                <Name>user</Name>
+                <DisplayName>User</DisplayName>
+                <Group>Administrators</Group>
+                <Password>
+                  <PlainText>true</PlainText>
+                  <Value></Value>
+                </Password>
+              </LocalAccount>
+            </LocalAccounts>
+          </UserAccounts>
+        </component>
+      </settings>
+
+      <!-- ====== Embedded scripts ====== -->
+      <Extensions>
+        <!-- ExtractScript helper -->
+        <ExtractScript>
+param([xml]$Document)
+foreach($file in $Document.unattend.Extensions.File){
+    $path=[System.Environment]::ExpandEnvironmentVariables($file.GetAttribute('path'));
+    $dir=[System.IO.Path]::GetDirectoryName($path);
+    if(!(Test-Path $dir)){New-Item -ItemType Directory -Path $dir -Force | Out-Null;}
+    [System.IO.File]::WriteAllText($path,$file.InnerText.TrimEnd());
+}
+        </ExtractScript>
+
+        <!-- Tweaks script -->
+        <File path="C:\Windows\Setup\Scripts\Tweaks.ps1"><![CDATA[
+# Tweaks.ps1  (runs during specialize)
+Write-Host "== Tweaks Script Starting ==";
+
+# ---------- 1. Debloat consumer apps ----------
+$apps = @(
+  "Microsoft.BingNews","Microsoft.GetHelp","Microsoft.Getstarted","Microsoft.People",
+  "Microsoft.WindowsAlarms","Microsoft.WindowsFeedbackHub","Microsoft.WindowsMaps",
+  "Microsoft.XboxGamingOverlay","Microsoft.YourPhone","Microsoft.ZuneMusic",
+  "Microsoft.ZuneVideo","Microsoft.BingWeather","Microsoft.MicrosoftOfficeHub",
+  "Microsoft.OneConnect","Microsoft.SkypeApp","Microsoft.Todos","Microsoft.Whiteboard"
+);
+foreach($app in $apps){
+    Write-Host "Removing $app";
+    Get-AppxProvisionedPackage -Online | Where DisplayName -Like $app | Remove-AppxProvisionedPackage -Online -ErrorAction SilentlyContinue;
+    Get-AppxPackage -AllUsers | Where Name -Like $app | Remove-AppxPackage -AllUsers -ErrorAction SilentlyContinue;
+}
+
+# ---------- 2. Disable consumer experience / tips ----------
+$cdm="HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\ContentDeliveryManager";
+if(Test-Path $cdm){
+    $keys=@(
+      "SubscribedContent-338388Enabled","SubscribedContent-353694Enabled","SubscribedContent-310093Enabled",
+      "SubscribedContent-338387Enabled","SilentInstalledAppsEnabled","SystemPaneSuggestionsEnabled"
+    );
+    foreach($k in $keys){Set-ItemProperty -Path $cdm -Name $k -Value 0 -ErrorAction SilentlyContinue;}
+}
+
+# ---------- 3. Minimise telemetry ----------
+New-Item -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection" -Force | Out-Null;
+Set-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection" -Name "AllowTelemetry" -Type DWord -Value 0;
+
+# ---------- 4. Disable background apps ----------
+New-Item -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\System" -Force | Out-Null;
+Set-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\System" -Name "AllowBackgroundAppsGlobal" -Type DWord -Value 2;
+
+# ---------- 5. Disable hibernation ----------
+powercfg.exe /hibernate off
+
+# ---------- 6. Create & set High Performance power plan ----------
+$hpGuid = "8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c";  # built‑in High performance
+powercfg.exe /setactive $hpGuid
+
+# ---------- 7. Enable Storage Sense & weekly cleanup ----------
+New-Item -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\StorageSense\Parameters\StoragePolicy" -Force | Out-Null;
+Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\StorageSense\Parameters\StoragePolicy" -Name "01" -Type DWord -Value 1;  # Storage Sense On
+# schedule weekly cleanup via Task Scheduler
+schtasks.exe /Create /TN "WeeklyDiskCleanup" /SC WEEKLY /D SUN /RL HIGHEST /RU SYSTEM /TR "cleanmgr.exe /sagerun:1" /F
+
+# ---------- 8. Enable Memory Integrity (requires reboot capable hardware) ----------
+New-Item -Path "HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard\Scenarios\MemoryIntegrity" -Force | Out-Null;
+Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard\Scenarios\MemoryIntegrity" -Name "Enabled" -Type DWord -Value 1;
+
+# ---------- 9. Clean Start‑menu pinned apps (default user + current) ----------
+$pinnedJson = '{ "pinnedList": [] }';
+$defaultShell = "C:\Users\Default\AppData\Local\Microsoft\Windows\Shell";
+New-Item -Path $defaultShell -ItemType Directory -Force | Out-Null;
+$pinnedPathDefault = Join-Path $defaultShell "LayoutModification.json";
+Set-Content -Path $pinnedPathDefault -Value $pinnedJson -Encoding UTF8;
+
+$currentShell = "$env:LOCALAPPDATA\Microsoft\Windows\Shell";
+New-Item -Path $currentShell -ItemType Directory -Force | Out-Null;
+Set-Content -Path (Join-Path $currentShell "LayoutModification.json") -Value $pinnedJson -Encoding UTF8;
+
+# ---------- 10. Restore restricted execution policy ----------
+Set-ExecutionPolicy Restricted -Scope LocalMachine -Force;
+
+Write-Host "== Tweaks Complete ==";
+        ]]></File>
+      </Extensions>
+    </unattend>
